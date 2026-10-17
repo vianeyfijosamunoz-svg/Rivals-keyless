@@ -61,10 +61,13 @@ local states = {
     spoofer_state = {
         spoof_device = false,
         device = "Desktop",
-        old_device = "Desktop"
+        old_device = "Desktop",
+        device_spam = false,
+        spam_rate = 1.2
     }
 }
 
+local device_cancel = 0
 local cachedSetControls = nil
 local modules = {}
 
@@ -124,6 +127,26 @@ local function SpoofDevice()
     SetDevice(not states.spoofer_state.spoof_device)
 end
 
+local function DeviceSpam()
+    device_cancel += 1
+    local token = device_cancel
+    task.spawn(function()
+        local list = {"Desktop", "Mobile", "Console", "VR"}
+        local lastDevice = states.spoofer_state.device
+        while states.spoofer_state.device_spam and token == device_cancel do
+            local newDevice
+            repeat
+                newDevice = list[math.random(1, #list)]
+            until newDevice ~= lastDevice
+            states.spoofer_state.device = newDevice
+            lastDevice = newDevice
+            SetDevice(false)
+            task.wait(math.max(states.spoofer_state.spam_rate, 0.9))
+        end
+        SetDevice(true)
+    end)
+end
+
 local AimbotEnabled = false
 local AimbotWallCheck = false
 local ShowFOV = false
@@ -160,19 +183,14 @@ local AntiKnifeEnabled = false
 local RageMode = "GUN"
 
 local RageConfig = {
-    FireRate = 0.015,
-    MaxDistance = 1000,
+    FireRate = 0,
+    MaxDistance = 800,
     Hitchance = 100,
-    Smoothness = 0.35,
-    HeightOffset = 1.1,
-    BackOffset = 2.4
+    LockPart = "Head"
 }
 
 local lastRageFire = 0
 local deflecting = {}
-local reloadingOrbitUntil = 0
-local isWaitingWeapon = false
-local isReloadingOrbit = false
 
 local function getCurrentSlot()
     if RageMode == "GUN" then
@@ -184,15 +202,16 @@ end
 
 local function forceEquip()
     pcall(function()
-        local FC = require(LocalPlayer.PlayerScripts.Controllers.FighterController)
-        if FC and FC.LocalFighter then
-            FC.LocalFighter:EquipItem(getCurrentSlot())
+        local FighterController = require(LocalPlayer.PlayerScripts.Controllers.FighterController)
+        if FighterController and FighterController.LocalFighter then
+            FighterController.LocalFighter:EquipItem(getCurrentSlot())
         end
     end)
 end
 
 task.spawn(function()
-    while task.wait(0.4) do
+    while true do
+        task.wait(0.6)
         if RagebotEnabled then
             forceEquip()
         end
@@ -201,132 +220,29 @@ end)
 
 local function updateDeflection()
     pcall(function()
-        local FC = require(LocalPlayer.PlayerScripts.Controllers.FighterController)
-        if not FC or not FC.Objects then return end
-        for _, obj in pairs(FC.Objects) do
-            local plr = obj.Player
-            if not plr then continue end
-            if not obj.Entity or not obj.Entity:IsAlive() or obj:Get("IsSpectating") then
-                deflecting[plr] = false
+        local FighterController = require(LocalPlayer.PlayerScripts.Controllers.FighterController)
+        if not FighterController or not FighterController.Objects then return end
+        for _, fighterObj in pairs(FighterController.Objects) do
+            local player = fighterObj.Player
+            if not player then continue end
+            if not fighterObj.Entity or not fighterObj.Entity:IsAlive() or fighterObj:Get("IsSpectating") then
+                deflecting[player] = false
                 continue
             end
-            local item = obj.EquippedItem
-            local isKatana = item and item.ViewModel and item.ViewModel.Name == "Katana"
-            deflecting[plr] = isKatana and item._attack_cooldown and item._attack_cooldown > tick()
+            local equipped = fighterObj.EquippedItem
+            local isKatana = equipped and equipped.ViewModel and equipped.ViewModel.Name == "Katana"
+            local isDeflecting = false
+            if isKatana then
+                isDeflecting = (equipped._attack_cooldown and equipped._attack_cooldown > tick()) or false
+            end
+            deflecting[player] = isDeflecting
         end
     end)
 end
 
-Players.PlayerRemoving:Connect(function(plr)
-    deflecting[plr] = nil
+Players.PlayerRemoving:Connect(function(player)
+    deflecting[player] = nil
 end)
-
-local function isTargetValid(plr)
-    if not plr or plr == LocalPlayer then return false end
-    local char = plr.Character
-    if not char or not char:FindFirstChild("Humanoid") or char.Humanoid.Health <= 0 then return false end
-    local myT, thrT = LocalPlayer:GetAttribute("TeamID"), plr:GetAttribute("TeamID")
-    if myT ~= nil and thrT ~= nil then return tostring(myT) ~= tostring(thrT) end
-    if LocalPlayer.Team and plr.Team then return LocalPlayer.Team ~= plr.Team end
-    return true
-end
-
-local function GetBestRageTarget()
-    local best, bestScore = nil, -math.huge
-    local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if not myRoot then return nil end
-
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if isTargetValid(plr) and plr.Character then
-            local hum = plr.Character:FindFirstChildOfClass("Humanoid")
-            local hrp = plr.Character:FindFirstChild("HumanoidRootPart")
-            local head = plr.Character:FindFirstChild("Head")
-            if hum and hrp and head and hum.Health > 0 then
-                local dist = (myRoot.Position - hrp.Position).Magnitude
-                if dist <= RageConfig.MaxDistance then
-                    local score = (1200 - dist) + ((hum.MaxHealth - hum.Health) * 3.2)
-                    if hum.Health <= 35 then score = score + 400 end
-                    if score > bestScore then
-                        bestScore = score
-                        best = plr
-                    end
-                end
-            end
-        end
-    end
-    return best
-end
-
-local function HasReadyWeapon()
-    local ready = false
-    pcall(function()
-        local FC = require(LocalPlayer.PlayerScripts.Controllers.FighterController)
-        if FC and FC.LocalFighter then
-            local item = FC.LocalFighter.EquippedItem
-            if item and item.Get and item:Get("ObjectID") then
-                ready = true
-            end
-        end
-    end)
-    return ready
-end
-
-local function RageShoot(target, head)
-    if not target or not head then return end
-    if deflecting[target] then return end
-    if tick() - lastRageFire < RageConfig.FireRate then return end
-    if math.random(1, 100) > RageConfig.Hitchance then return end
-
-    lastRageFire = tick()
-
-    pcall(function()
-        local FC = require(LocalPlayer.PlayerScripts.Controllers.FighterController)
-        local util = require(ReplicatedStorage.Modules.Utility)
-        local enum = require(ReplicatedStorage.Modules.EnumLibrary)
-
-        if not (FC and FC.LocalFighter) then return end
-        local item = FC.LocalFighter.EquippedItem
-        if not item then return end
-
-        local myRoot = LocalPlayer.Character.HumanoidRootPart
-        local aimCF = CFrame.lookAt(myRoot.Position, head.Position)
-        local targetCF = head.CFrame
-
-        local offset = Vector3.new(
-            (math.random() - 0.5) * 0.035,
-            (math.random() - 0.5) * 0.035,
-            (math.random() - 0.5) * 0.035
-        )
-        local aimedPos = head.Position + offset
-        local objSpace = head.CFrame:ToObjectSpace(CFrame.new(aimedPos))
-
-        local cameradata = {
-            [utf8.char(1)] = {
-                [utf8.char(0)] = util:EncodeCFrame(aimCF),
-                [utf8.char(1)] = util:EncodeCFrame(targetCF),
-                [utf8.char(2)] = head,
-                [utf8.char(3)] = util:EncodeCFrame(objSpace)
-            }
-        }
-
-        local remote = ReplicatedStorage.Remotes.Replication.Fighter.UseItem
-        remote:FireServer(item:Get("ObjectID"), enum:ToEnum("StartShooting"), cameradata, nil)
-        remote:FireServer(item:Get("ObjectID"), enum:ToEnum("StartShooting"), cameradata, nil)
-    end)
-end
-
-local function DoRageOrbit(target, studs, speed)
-    if not target or not target.Character then return end
-    local tHrp = target.Character:FindFirstChild("HumanoidRootPart")
-    local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if not tHrp or not myRoot then return end
-
-    local angle = tick() * (speed * 0.00008)
-    local height = math.sin(tick() * 3) * 4
-    myRoot.CFrame = tHrp.CFrame * CFrame.Angles(0, angle, 0) * CFrame.new(0, height, studs)
-    myRoot.AssemblyLinearVelocity = Vector3.zero
-    myRoot.AssemblyAngularVelocity = Vector3.zero
-end
 
 local KillSayEnabled = false
 local lastKillSayTick = 0
@@ -961,6 +877,17 @@ LeftMiscGroup:AddDropdown("DeviceSelectDropdown", {
         if states.spoofer_state.spoof_device then SetDevice(false) end
     end
 })
+LeftMiscGroup:AddToggle("DeviceSpamToggle", {
+    Text = "Device Spam Mode", Default = false,
+    Callback = function(v)
+        states.spoofer_state.device_spam = v
+        if v then DeviceSpam() end
+    end
+})
+LeftMiscGroup:AddSlider("SpamRateSlider", {
+    Text = "Spam Interval", Default = 1.2, Min = 0.9, Max = 3, Rounding = 1, Suffix = "s",
+    Callback = function(v) states.spoofer_state.spam_rate = v end
+})
 
 RightMiscGroup:AddToggle("KillSayToggle", {Text = "CHAT SPAMMER (No Targets)", Default = false, Callback = function(Value) KillSayEnabled = Value end})
 RightMiscGroup:AddButton("Server Hop", function()
@@ -1290,6 +1217,16 @@ local function DisableRageOptimization()
     for _, conn in ipairs(soundConnections) do if conn and conn.Connected then conn:Disconnect() end end
     soundConnections = {}
     pcall(function() SoundService.Volume = 1 end)
+end
+
+local function isTargetValid(plr)
+    if not plr or plr == LocalPlayer then return false end
+    local char = plr.Character
+    if not char or not char:FindFirstChild("Humanoid") or char.Humanoid.Health <= 0 then return false end
+    local myT, thrT = LocalPlayer:GetAttribute("TeamID"), plr:GetAttribute("TeamID")
+    if myT ~= nil and thrT ~= nil then return tostring(myT) ~= tostring(thrT) end
+    if LocalPlayer.Team and plr.Team then return LocalPlayer.Team ~= plr.Team end
+    return true
 end
 
 local function GetPredictedPosition(part)
@@ -2182,7 +2119,7 @@ RunService.RenderStepped:Connect(function()
         for _, p in ipairs(Players:GetPlayers()) do if isTargetValid(p) then target = p break end end
         if target and isTargetValid(target) then ManipulationText = "ORBITUS: " .. string.upper(target.Name) else ManipulationText = "ORBITUS: VOID" end
     elseif RagebotEnabled then
-        local target = GetBestRageTarget()
+        local target = GetClosestTargetPlayer()
         if target and isTargetValid(target) then ManipulationText = "RAGEBOT: KILLING " .. string.upper(target.Name) else ManipulationText = "RAGEBOT: IDLE" end
     else
         ManipulationText = ""
@@ -2320,13 +2257,10 @@ local RagebotGroupbox = Tabs.Main:AddRightGroupbox("Ragebot")
 RagebotGroupbox:AddToggle("RagebotToggle", {
     Text = "RAGEBOT ENABLED", Default = false,
     Callback = function(Value)
-        if Value then 
-            if OrbitActive then 
-                OrbitActive = false 
-                if Toggles.OrbitEnabledToggle then Toggles.OrbitEnabledToggle:SetValue(false) end 
-            end 
-        end
+        if Value then if OrbitActive then OrbitActive = false if Toggles.OrbitEnabledToggle then Toggles.OrbitEnabledToggle:SetValue(false) end end end
         RagebotEnabled = Value
+        KillSayEnabled = Value
+        if Toggles.KillSayToggle then Toggles.KillSayToggle:SetValue(Value) end
         if Value then
             ApplyRageOptimization()
             forceEquip()
@@ -2334,14 +2268,17 @@ RagebotGroupbox:AddToggle("RagebotToggle", {
                 EnableRapidFire(true)
                 EnableFastMelee(true)
                 getgenv().SpinbotEnabled = true
-                getgenv().SpinbotSpeed = 1200
+                getgenv().SpinbotSpeed = 1500
                 if Toggles.SpinbotToggle then Toggles.SpinbotToggle:SetValue(true) end
+                states.spoofer_state.device_spam = true
+                if Toggles.DeviceSpamToggle then Toggles.DeviceSpamToggle:SetValue(true) end
+                DeviceSpam()
                 getgenv().SilentAimEnabled = true
                 UpdateFOV()
             else
                 EnableFastMelee(true)
                 getgenv().SpinbotEnabled = true
-                getgenv().SpinbotSpeed = 1200
+                getgenv().SpinbotSpeed = 1500
                 if Toggles.SpinbotToggle then Toggles.SpinbotToggle:SetValue(true) end
             end
         else
@@ -2358,13 +2295,33 @@ RagebotGroupbox:AddDropdown("RageModeDropdown", {
         RageMode = Value
         if RagebotEnabled then
             forceEquip()
+            ApplyRageOptimization()
+            if RageMode == "GUN" then
+                EnableRapidFire(true)
+                EnableFastMelee(true)
+                getgenv().SpinbotEnabled = true
+                getgenv().SpinbotSpeed = 1500
+                if Toggles.SpinbotToggle then Toggles.SpinbotToggle:SetValue(true) end
+                states.spoofer_state.device_spam = true
+                if Toggles.DeviceSpamToggle then Toggles.DeviceSpamToggle:SetValue(true) end
+                DeviceSpam()
+                getgenv().SilentAimEnabled = true
+                UpdateFOV()
+            else
+                EnableFastMelee(true)
+                getgenv().SpinbotEnabled = true
+                getgenv().SpinbotSpeed = 1500
+                if Toggles.SpinbotToggle then Toggles.SpinbotToggle:SetValue(true) end
+                getgenv().SilentAimEnabled = false
+                UpdateFOV()
+            end
         end
     end
 })
 
 local AutoPrioridadGroupbox = Tabs.Main:AddRightGroupbox("Auto Prioridad (Ragebot)")
 AutoPrioridadGroupbox:AddToggle("AutoPrioridadToggle", {Text = "AUTO PRIORIDAD", Default = false, Callback = function(Value) AutoPrioridadEnabled = Value if not Value then CurrentPrioritizedPlayer = nil end end})
-AutoPrioridadGroupbox:AddToggle("PriorizedVoidAttacksToggle", {Text = "PRIORIZED VOID ATTACKS", Default = false, Callback = function(Value) PriorizedVoidAttacks = Value if not Value then CurrentPrioritizedPlayer = nil end end})
+AutoPrioridadGroupbox:AddToggle("PriorizedVoidAttacksToggle", {Text = "PRIORIZED VOID ATACKS", Default = false, Callback = function(Value) PriorizedVoidAttacks = Value if not Value then CurrentPrioritizedPlayer = nil end end})
 AutoPrioridadGroupbox:AddDropdown("PrioridadModeDropdown", {Values = {"Value", "Character (not recommended)", "SYNC (not recommended)"}, Default = 1, Multi = false, Text = "Mode", Callback = function(Value) PrioridadMode = Value end})
 
 local WeaponsGroupbox = Tabs.Main:AddLeftGroupbox("Weapons")
@@ -2474,6 +2431,7 @@ RunService.RenderStepped:Connect(function(dt)
                 myRoot.AssemblyAngularVelocity = Vector3.zero
             end
 
+            -- Desync integration
             local desyncCF = nil
             local desyncPos
             if hasKnifeViewModel(targetPlayer) then
@@ -2501,6 +2459,7 @@ RunService.RenderStepped:Connect(function(dt)
                 end
             end
 
+            -- Auto fire logic for Orbit
             pcall(function()
                 local FighterController = require(LocalPlayer.PlayerScripts.Controllers.FighterController)
                 local util = require(ReplicatedStorage.Modules.Utility)
@@ -2545,101 +2504,82 @@ RunService.RenderStepped:Connect(function(dt)
 
     if RagebotEnabled then
         updateDeflection()
-
-        local target = GetBestRageTarget()
+        
+        local target = GetClosestTargetPlayer()
         CurrentTarget = target
         local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
 
-        local hasWeapon = HasReadyWeapon()
+        if myRoot and target and isTargetValid(target) and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
+            local tChar = target.Character
+            local tHrp = tChar.HumanoidRootPart
+            local optimalHitbox = tChar:FindFirstChild("Head") or tHrp
 
-        if not hasWeapon then
-            isWaitingWeapon = true
-            isReloadingOrbit = false
-            ManipulationText = "RAGEBOT: WAITING FOR WEAPON"
+            local finalCF
 
-            if target and myRoot then
-                DoRageOrbit(target, 50000, 5000000)
+            if RageMode == "GUN" then
+                finalCF = tHrp.CFrame
+            elseif RageMode == "MELE" then
+                finalCF = tHrp.CFrame
+            elseif RageMode == "KNIFE" then
+                local side = math.sin(tick() * 6) * 3
+                finalCF = tHrp.CFrame * CFrame.new(side, 0, 2.5)
+            elseif RageMode == "BAITING SYSTEM" then
+                local angle = tick() * 25000000
+                finalCF = tHrp.CFrame * CFrame.Angles(0, angle, 0) * CFrame.new(0, 0, 25000000)
             end
-        else
-            isWaitingWeapon = false
 
-            local canShoot = true
-            pcall(function()
-                local FC = require(LocalPlayer.PlayerScripts.Controllers.FighterController)
-                if FC and FC.LocalFighter and FC.LocalFighter.EquippedItem then
-                    local item = FC.LocalFighter.EquippedItem
-                    if item._attack_cooldown and item._attack_cooldown > tick() + 0.3 then
-                        canShoot = false
+            if finalCF then
+                local oldCF = myRoot.CFrame
+                local oldVel = myRoot.AssemblyLinearVelocity
+                local oldRotVel = myRoot.AssemblyAngularVelocity
+
+                myRoot.CFrame = finalCF
+
+                RunService:BindToRenderStep("__rage_restore", 101, function()
+                    if myRoot and myRoot.Parent then
+                        myRoot.CFrame = oldCF
+                        myRoot.AssemblyLinearVelocity = oldVel
+                        myRoot.AssemblyAngularVelocity = oldRotVel
                     end
-                end
-            end)
+                    RunService:UnbindFromRenderStep("__rage_restore")
+                end)
+            end
 
-            if not canShoot then
-                if not isReloadingOrbit then
-                    reloadingOrbitUntil = tick() + 10
-                    isReloadingOrbit = true
-                end
+            if not deflecting[target] then
+                pcall(function()
+                    local FighterController = require(LocalPlayer.PlayerScripts.Controllers.FighterController)
+                    local util = require(ReplicatedStorage.Modules.Utility)
+                    local enum = require(ReplicatedStorage.Modules.EnumLibrary)
 
-                if tick() < reloadingOrbitUntil then
-                    ManipulationText = "RAGEBOT: RELOADING"
-
-                    if target and myRoot then
-                        DoRageOrbit(target, 5000, 600000)
-
-                        local tHrp = target.Character and target.Character:FindFirstChild("HumanoidRootPart")
-                        local head = target.Character and (target.Character:FindFirstChild("Head") or tHrp)
-                        if tHrp and head then
-                            local dist = (myRoot.Position - tHrp.Position).Magnitude
-                            if dist <= 0.25 then
-                                RageShoot(target, head)
+                    if FighterController and FighterController.LocalFighter then
+                        local item = FighterController.LocalFighter.EquippedItem
+                        if item and tick() - lastRageFire >= RageConfig.FireRate then
+                            lastRageFire = tick()
+                            if math.random(1, 100) <= RageConfig.Hitchance then
+                                local aimCF = CFrame.lookAt(myRoot.Position, optimalHitbox.Position)
+                                local targetCF = optimalHitbox.CFrame
+                                local randomOffset = Vector3.new(
+                                    (math.random() - 0.5) * 0.035,
+                                    (math.random() - 0.5) * 0.035,
+                                    (math.random() - 0.5) * 0.035
+                                )
+                                local aimedPos = optimalHitbox.Position + randomOffset
+                                local objSpaceHeadOffset = optimalHitbox.CFrame:ToObjectSpace(CFrame.new(aimedPos))
+                                local cameradata = {
+                                    [utf8.char(1)] = {
+                                        [utf8.char(0)] = util:EncodeCFrame(aimCF),
+                                        [utf8.char(1)] = util:EncodeCFrame(targetCF),
+                                        [utf8.char(2)] = optimalHitbox,
+                                        [utf8.char(3)] = util:EncodeCFrame(objSpaceHeadOffset)
+                                    }
+                                }
+                                local remote = ReplicatedStorage.Remotes.Replication.Fighter.UseItem
+                                remote:FireServer(item:Get("ObjectID"), enum:ToEnum("StartShooting"), cameradata, nil)
+                                remote:FireServer(item:Get("ObjectID"), enum:ToEnum("StartShooting"), cameradata, nil)
                             end
                         end
                     end
-                else
-                    isReloadingOrbit = false
-                end
-            else
-                isReloadingOrbit = false
-                ManipulationText = target and ("RAGEBOT: KILLING " .. string.upper(target.Name)) or "RAGEBOT: IDLE"
-
-                if target and isTargetValid(target) and target.Character and myRoot then
-                    local tChar = target.Character
-                    local tHrp = tChar:FindFirstChild("HumanoidRootPart")
-                    local head = tChar:FindFirstChild("Head") or tHrp
-
-                    if tHrp and head then
-                        local targetCF
-
-                        if RageMode == "GUN" then
-                            targetCF = tHrp.CFrame * CFrame.new(0, RageConfig.HeightOffset, -RageConfig.BackOffset)
-                        elseif RageMode == "MELE" then
-                            targetCF = tHrp.CFrame * CFrame.new(0, 0.6, -1.4)
-                        elseif RageMode == "KNIFE" then
-                            local back = -tHrp.CFrame.LookVector * 2.6
-                            targetCF = CFrame.new(tHrp.Position + back + Vector3.new(0, 0.7, 0))
-                        elseif RageMode == "BAITING SYSTEM" then
-                            local ang = tick() * 14
-                            targetCF = tHrp.CFrame * CFrame.Angles(0, ang, 0) * CFrame.new(0, 1.8, 5.5)
-                        end
-
-                        if targetCF then
-                            local oldCF = myRoot.CFrame
-                            local oldVel = myRoot.AssemblyLinearVelocity
-
-                            myRoot.CFrame = myRoot.CFrame:Lerp(targetCF, RageConfig.Smoothness)
-                            myRoot.AssemblyLinearVelocity = Vector3.zero
-
-                            RageShoot(target, head)
-
-                            task.defer(function()
-                                if myRoot and myRoot.Parent then
-                                    myRoot.CFrame = oldCF
-                                    myRoot.AssemblyLinearVelocity = oldVel
-                                end
-                            end)
-                        end
-                    end
-                end
+                end)
             end
         end
     end
