@@ -192,57 +192,6 @@ local RageConfig = {
 local lastRageFire = 0
 local deflecting = {}
 
-local voidActive = false
-local voidConnection = nil
-local baitingDesyncActive = false
-
-local function StartBaitingVoid()
-    if voidConnection then
-        voidConnection:Disconnect()
-        voidConnection = nil
-    end
-    voidActive = true
-    baitingDesyncActive = true
-    voidConnection = RunService.Heartbeat:Connect(function()
-        local char = LocalPlayer.Character
-        if not char then return end
-        local hrp = char:FindFirstChild("HumanoidRootPart")
-        if not hrp or not voidActive then return end
-        local voidPos = Vector3.new(hrp.Position.X + 2e15, 999999, hrp.Position.Z + 2e15)
-        local desyncOffset = Vector3.new(
-            math.sin(tick() * 4.2) * 18,
-            math.cos(tick() * 3.7) * 12,
-            math.sin(tick() * 5.1) * 18
-        )
-        local finalPos = voidPos + desyncOffset
-        local oldCF = hrp.CFrame
-        local oldVel = hrp.AssemblyLinearVelocity
-        local oldRotVel = hrp.AssemblyAngularVelocity
-        hrp.CFrame = CFrame.new(finalPos) * CFrame.Angles(
-            math.rad(math.sin(tick() * 2.8) * 40),
-            math.rad(tick() * 90),
-            math.rad(math.cos(tick() * 3.3) * 35)
-        )
-        RunService:BindToRenderStep("BaitingDesyncRestore", 200, function()
-            if hrp and hrp.Parent then
-                hrp.CFrame = oldCF
-                hrp.AssemblyLinearVelocity = oldVel
-                hrp.AssemblyAngularVelocity = oldRotVel
-            end
-            RunService:UnbindFromRenderStep("BaitingDesyncRestore")
-        end)
-    end)
-end
-
-local function StopBaitingVoid()
-    voidActive = false
-    baitingDesyncActive = false
-    if voidConnection then
-        voidConnection:Disconnect()
-        voidConnection = nil
-    end
-end
-
 local function getCurrentSlot()
     if RageMode == "GUN" then
         return 1
@@ -331,16 +280,16 @@ local CurrentPrioritizedPlayer = nil
 local TriggerbotEnabled = false
 local TriggerbotWallCheck = false
 local ForgotTimeVal = 0
-local ReactionTimeVal = 0
-local CooldownVal = 0
+local ReaccionTimeVal = 0
+local CooldawnVal = 0
 local TimeOfShooterVal = 0
 local lastTriggerFire = 0
 
 local MeleeRangeEnabled = false
 local MeleeRangeMultiplier = 1
 local KnifeModeEnabled = false
-local AlwaysBackstabEnabled = false
-local BackstabMultiplier = 1
+local AlwaysBackstapEnabled = false
+local BackstapMultiplier = 1
 local FullAutoEnabled = false
 
 getgenv().SpinbotEnabled = false
@@ -940,7 +889,7 @@ LeftMiscGroup:AddSlider("SpamRateSlider", {
     Callback = function(v) states.spoofer_state.spam_rate = v end
 })
 
-RightMiscGroup:AddToggle("KillSayToggle", {Text = "CHAT SPAMMER", Default = false, Callback = function(Value) KillSayEnabled = Value end})
+RightMiscGroup:AddToggle("KillSayToggle", {Text = "CHAT SPAMMER (No Targets)", Default = false, Callback = function(Value) KillSayEnabled = Value end})
 RightMiscGroup:AddButton("Server Hop", function()
     Library:Notify("Server Hopping...", 3)
     pcall(function() game:GetService("TeleportService"):Teleport(game.PlaceId, LocalPlayer) end)
@@ -1322,22 +1271,26 @@ end
 
 local function SendKillSayMessage()
     if not KillSayEnabled then return end
-    local currentTime = tick()
-    if currentTime - lastKillSayTick >= 4 then
-        lastKillSayTick = currentTime
-        local randomPhrase = CustomKillPhrases[math.random(1, #CustomKillPhrases)]
-        pcall(function()
-            local TextChatService = game:GetService("TextChatService")
-            if TextChatService.ChatInputBarConfiguration and TextChatService.ChatInputBarConfiguration.TargetTextChannel then
-                TextChatService.ChatInputBarConfiguration.TargetTextChannel:SendAsync(randomPhrase)
-                return
-            end
-            local defaultChatSystemChatEvents = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
-            if defaultChatSystemChatEvents then
-                local sayMessageRequest = defaultChatSystemChatEvents:FindFirstChild("SayMessageRequest")
-                if sayMessageRequest then sayMessageRequest:FireServer(randomPhrase, "All") end
-            end
-        end)
+    local hasValidEnemy = false
+    for _, plr in ipairs(Players:GetPlayers()) do if isTargetValid(plr) then hasValidEnemy = true break end end
+    if not hasValidEnemy then
+        local currentTime = tick()
+        if currentTime - lastKillSayTick >= 5 then
+            lastKillSayTick = currentTime
+            local randomPhrase = CustomKillPhrases[math.random(1, #CustomKillPhrases)]
+            pcall(function()
+                local TextChatService = game:GetService("TextChatService")
+                if TextChatService.ChatInputBarConfiguration and TextChatService.ChatInputBarConfiguration.TargetTextChannel then
+                    TextChatService.ChatInputBarConfiguration.TargetTextChannel:SendAsync(randomPhrase)
+                    return
+                end
+                local defaultChatSystemChatEvents = ReplicatedStorage:FindFirstChild("DefaultChatSystemChatEvents")
+                if defaultChatSystemChatEvents then
+                    local sayMessageRequest = defaultChatSystemChatEvents:FindFirstChild("SayMessageRequest")
+                    if sayMessageRequest then sayMessageRequest:FireServer(randomPhrase, "All") end
+                end
+            end)
+        end
     end
 end
 
@@ -1381,9 +1334,6 @@ local function CheckKills()
     if lastKnownKills[LocalPlayer] and myKills > lastKnownKills[LocalPlayer] then
         local targetName = CurrentTarget and CurrentTarget.Name or "ENEMY"
         PlayKillEffect(targetName)
-        if KillSayEnabled then
-            SendKillSayMessage()
-        end
     end
     lastKnownKills[LocalPlayer] = myKills
 end
@@ -1691,10 +1641,12 @@ local function getClosestTriggerTarget()
         local pHead = pChar:FindFirstChild("Head")
         local pHum = pChar:FindFirstChildWhichIsA("Humanoid")
         if not (pRoot and pHead and pHum and pHum.Health > 0) then continue end
+        
         if TriggerbotWallCheck then
             local valid = getValidHead(pChar)
             if not valid then continue end
         end
+
         local dist = (myRoot.Position - pRoot.Position).Magnitude
         if dist < closestDist then
             closestDist = dist
@@ -1804,11 +1756,6 @@ end
 
 LocalPlayer.CharacterAdded:Connect(function()
     StopFreecam()
-    if voidActive then
-        StopBaitingVoid()
-        task.wait(0.5)
-        StartBaitingVoid()
-    end
 end)
 
 task.spawn(function()
@@ -2247,8 +2194,8 @@ local TriggerbotGroupbox = Tabs.Main:AddRightGroupbox("Triggerbot")
 TriggerbotGroupbox:AddToggle("TriggerbotBetaToggle", {Text = "ENABLED", Default = false, Callback = function(Value) TriggerbotEnabled = Value end})
 TriggerbotGroupbox:AddToggle("TriggerbotWallCheckToggle", {Text = "WALL CHECK", Default = false, Callback = function(Value) TriggerbotWallCheck = Value end})
 TriggerbotGroupbox:AddSlider("ForgotTimeSlider", {Text = "FORGOT TIME", Default = 0, Min = 0, Max = 35, Rounding = 0, Callback = function(Value) ForgotTimeVal = Value end})
-TriggerbotGroupbox:AddSlider("ReactionTimeSlider", {Text = "REACTION TIME", Default = 0, Min = 0, Max = 35, Rounding = 0, Callback = function(Value) ReactionTimeVal = Value end})
-TriggerbotGroupbox:AddSlider("CooldownSlider", {Text = "COOLDOWN", Default = 0, Min = 0, Max = 35, Rounding = 0, Callback = function(Value) CooldownVal = Value end})
+TriggerbotGroupbox:AddSlider("ReaccionTimeSlider", {Text = "REACCION TIME", Default = 0, Min = 0, Max = 35, Rounding = 0, Callback = function(Value) ReaccionTimeVal = Value end})
+TriggerbotGroupbox:AddSlider("CooldawnSlider", {Text = "COOLDAWN", Default = 0, Min = 0, Max = 35, Rounding = 0, Callback = function(Value) CooldawnVal = Value end})
 TriggerbotGroupbox:AddSlider("TimeOfShooterSlider", {Text = "TIME OF SHOOTER", Default = 0, Min = 0, Max = 35, Rounding = 0, Callback = function(Value) TimeOfShooterVal = Value end})
 
 LeftGroupbox:AddToggle("AimbotToggle", {Text = "ENABLED (Aggressive)", Default = false, Callback = function(Value) AimbotEnabled = Value UpdateFOV() end}):AddKeyPicker("AimbotKey", {Default = "E", Text = "Aimbot Keybind", Mode = "Toggle", SyncToggleState = true})
@@ -2278,9 +2225,9 @@ MeleeRangeGroupbox:AddToggle("MeleeRangeToggle", {Text = "MELEE RANGE ENABLED", 
 MeleeRangeGroupbox:AddSlider("MeleeRangeMultiplierSlider", {Text = "Melee Range Multiplier", Default = 1, Min = 1, Max = 3.5, Rounding = 1, Callback = function(Value) MeleeRangeMultiplier = Value end})
 MeleeRangeGroupbox:AddToggle("KnifeModeToggle", {Text = "KNIFE MODE", Default = false, Callback = function(Value) KnifeModeEnabled = Value end})
 
-local BackstabGroupbox = Tabs.Main:AddLeftGroupbox("Always Backstab")
-BackstabGroupbox:AddToggle("AlwaysBackstabToggle", {Text = "ALWAYS BACKSTAB", Default = false, Callback = function(Value) AlwaysBackstabEnabled = Value end})
-BackstabGroupbox:AddSlider("BackstabSlider", {Text = "Backstab Custom", Default = 1, Min = 1, Max = 7.5, Rounding = 1, Callback = function(Value) BackstabMultiplier = Value end})
+local BackstapGroupbox = Tabs.Main:AddLeftGroupbox("Always Backstap")
+BackstapGroupbox:AddToggle("AlwaysBackstapToggle", {Text = "ALWAYS BACKSTAP", Default = false, Callback = function(Value) AlwaysBackstapEnabled = Value end})
+BackstapGroupbox:AddSlider("BackstapSlider", {Text = "Backstap Custom", Default = 1, Min = 1, Max = 7.5, Rounding = 1, Callback = function(Value) BackstapMultiplier = Value end})
 
 RightGroupbox:AddToggle("SilentAimToggle", {Text = "ENABLED (Silent)", Default = false, Callback = function(Value) getgenv().SilentAimEnabled = Value UpdateFOV() end}):AddKeyPicker("SilentAimKey", {Default = "Q", Text = "Silent Aim Keybind", Mode = "Toggle", SyncToggleState = true})
 RightGroupbox:AddToggle("SilentWallCheckToggle", {Text = "WALL CHECK", Default = false, Callback = function(Value) SilentWallCheck = Value end})
@@ -2328,11 +2275,6 @@ RagebotGroupbox:AddToggle("RagebotToggle", {
                 DeviceSpam()
                 getgenv().SilentAimEnabled = true
                 UpdateFOV()
-            elseif RageMode == "BAITING SYSTEM" then
-                StartBaitingVoid()
-                EnableRapidFire(true)
-                getgenv().SilentAimEnabled = true
-                UpdateFOV()
             else
                 EnableFastMelee(true)
                 getgenv().SpinbotEnabled = true
@@ -2343,7 +2285,6 @@ RagebotGroupbox:AddToggle("RagebotToggle", {
             DisableRageOptimization()
             getgenv().SilentAimEnabled = false
             UpdateFOV()
-            StopBaitingVoid()
         end
     end
 })
@@ -2356,7 +2297,6 @@ RagebotGroupbox:AddDropdown("RageModeDropdown", {
             forceEquip()
             ApplyRageOptimization()
             if RageMode == "GUN" then
-                StopBaitingVoid()
                 EnableRapidFire(true)
                 EnableFastMelee(true)
                 getgenv().SpinbotEnabled = true
@@ -2367,13 +2307,7 @@ RagebotGroupbox:AddDropdown("RageModeDropdown", {
                 DeviceSpam()
                 getgenv().SilentAimEnabled = true
                 UpdateFOV()
-            elseif RageMode == "BAITING SYSTEM" then
-                StartBaitingVoid()
-                EnableRapidFire(true)
-                getgenv().SilentAimEnabled = true
-                UpdateFOV()
             else
-                StopBaitingVoid()
                 EnableFastMelee(true)
                 getgenv().SpinbotEnabled = true
                 getgenv().SpinbotSpeed = 1500
@@ -2387,7 +2321,7 @@ RagebotGroupbox:AddDropdown("RageModeDropdown", {
 
 local AutoPrioridadGroupbox = Tabs.Main:AddRightGroupbox("Auto Prioridad (Ragebot)")
 AutoPrioridadGroupbox:AddToggle("AutoPrioridadToggle", {Text = "AUTO PRIORIDAD", Default = false, Callback = function(Value) AutoPrioridadEnabled = Value if not Value then CurrentPrioritizedPlayer = nil end end})
-AutoPrioridadGroupbox:AddToggle("PriorizedVoidAttacksToggle", {Text = "PRIORIZED VOID ATTACKS", Default = false, Callback = function(Value) PriorizedVoidAttacks = Value if not Value then CurrentPrioritizedPlayer = nil end end})
+AutoPrioridadGroupbox:AddToggle("PriorizedVoidAttacksToggle", {Text = "PRIORIZED VOID ATACKS", Default = false, Callback = function(Value) PriorizedVoidAttacks = Value if not Value then CurrentPrioritizedPlayer = nil end end})
 AutoPrioridadGroupbox:AddDropdown("PrioridadModeDropdown", {Values = {"Value", "Character (not recommended)", "SYNC (not recommended)"}, Default = 1, Multi = false, Text = "Mode", Callback = function(Value) PrioridadMode = Value end})
 
 local WeaponsGroupbox = Tabs.Main:AddLeftGroupbox("Weapons")
@@ -2449,6 +2383,7 @@ RunService.RenderStepped:Connect(function(dt)
                         if item then
                             local util = require(ReplicatedStorage.Modules.Utility)
                             local enum = require(ReplicatedStorage.Modules.EnumLibrary)
+
                             local aimCF = CFrame.lookAt(targetRoot.Position, targetHead.Position)
                             local targetCF = targetHead.CFrame
                             local randomOffset = Vector3.new(
@@ -2458,6 +2393,7 @@ RunService.RenderStepped:Connect(function(dt)
                             )
                             local aimedPos = targetHead.Position + randomOffset
                             local objSpaceHeadOffset = targetHead.CFrame:ToObjectSpace(CFrame.new(aimedPos))
+
                             local cameradata = {
                                 [utf8.char(1)] = {
                                     [utf8.char(0)] = util:EncodeCFrame(aimCF),
@@ -2466,6 +2402,7 @@ RunService.RenderStepped:Connect(function(dt)
                                     [utf8.char(3)] = util:EncodeCFrame(objSpaceHeadOffset)
                                 }
                             }
+
                             ReplicatedStorage.Remotes.Replication.Fighter.UseItem:FireServer(
                                 item:Get("ObjectID"),
                                 enum:ToEnum("StartShooting"),
@@ -2493,6 +2430,8 @@ RunService.RenderStepped:Connect(function(dt)
                 myRoot.AssemblyLinearVelocity = Vector3.zero
                 myRoot.AssemblyAngularVelocity = Vector3.zero
             end
+
+            -- Desync integration
             local desyncCF = nil
             local desyncPos
             if hasKnifeViewModel(targetPlayer) then
@@ -2501,6 +2440,7 @@ RunService.RenderStepped:Connect(function(dt)
                 desyncPos = (targetRoot.CFrame * CFrame.new(0, 1, 2)).Position
             end
             desyncCF = CFrame.lookAt(desyncPos, targetHead.Position)
+
             if desyncCF and LocalPlayer.Character then
                 local myRootPart = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
                 if myRootPart then
@@ -2518,10 +2458,13 @@ RunService.RenderStepped:Connect(function(dt)
                     end)
                 end
             end
+
+            -- Auto fire logic for Orbit
             pcall(function()
                 local FighterController = require(LocalPlayer.PlayerScripts.Controllers.FighterController)
                 local util = require(ReplicatedStorage.Modules.Utility)
                 local enum = require(ReplicatedStorage.Modules.EnumLibrary)
+
                 if FighterController and FighterController.LocalFighter then
                     local item = FighterController.LocalFighter.EquippedItem
                     if item and tick() - lastOrbitFire >= 0 then
@@ -2561,119 +2504,82 @@ RunService.RenderStepped:Connect(function(dt)
 
     if RagebotEnabled then
         updateDeflection()
+        
         local target = GetClosestTargetPlayer()
         CurrentTarget = target
         local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
 
-        if RageMode == "BAITING SYSTEM" then
-            if not voidActive then
-                StartBaitingVoid()
+        if myRoot and target and isTargetValid(target) and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
+            local tChar = target.Character
+            local tHrp = tChar.HumanoidRootPart
+            local optimalHitbox = tChar:FindFirstChild("Head") or tHrp
+
+            local finalCF
+
+            if RageMode == "GUN" then
+                finalCF = tHrp.CFrame
+            elseif RageMode == "MELE" then
+                finalCF = tHrp.CFrame
+            elseif RageMode == "KNIFE" then
+                local side = math.sin(tick() * 6) * 3
+                finalCF = tHrp.CFrame * CFrame.new(side, 0, 2.5)
+            elseif RageMode == "BAITING SYSTEM" then
+                local angle = tick() * 25000000
+                finalCF = tHrp.CFrame * CFrame.Angles(0, angle, 0) * CFrame.new(0, 0, 25000000)
             end
-            if target and isTargetValid(target) and target.Character then
-                local tChar = target.Character
-                local optimalHitbox = tChar:FindFirstChild("Head") or tChar:FindFirstChild("HumanoidRootPart")
-                if optimalHitbox and not deflecting[target] then
-                    pcall(function()
-                        local FighterController = require(LocalPlayer.PlayerScripts.Controllers.FighterController)
-                        local util = require(ReplicatedStorage.Modules.Utility)
-                        local enum = require(ReplicatedStorage.Modules.EnumLibrary)
-                        if FighterController and FighterController.LocalFighter then
-                            local item = FighterController.LocalFighter.EquippedItem
-                            if item and tick() - lastRageFire >= RageConfig.FireRate then
-                                lastRageFire = tick()
-                                if math.random(1, 100) <= RageConfig.Hitchance then
-                                    local aimCF = CFrame.lookAt(myRoot and myRoot.Position or optimalHitbox.Position, optimalHitbox.Position)
-                                    local targetCF = optimalHitbox.CFrame
-                                    local randomOffset = Vector3.new(
-                                        (math.random() - 0.5) * 0.04,
-                                        (math.random() - 0.5) * 0.04,
-                                        (math.random() - 0.5) * 0.04
-                                    )
-                                    local aimedPos = optimalHitbox.Position + randomOffset
-                                    local objSpaceHeadOffset = optimalHitbox.CFrame:ToObjectSpace(CFrame.new(aimedPos))
-                                    local cameradata = {
-                                        [utf8.char(1)] = {
-                                            [utf8.char(0)] = util:EncodeCFrame(aimCF),
-                                            [utf8.char(1)] = util:EncodeCFrame(targetCF),
-                                            [utf8.char(2)] = optimalHitbox,
-                                            [utf8.char(3)] = util:EncodeCFrame(objSpaceHeadOffset)
-                                        }
+
+            if finalCF then
+                local oldCF = myRoot.CFrame
+                local oldVel = myRoot.AssemblyLinearVelocity
+                local oldRotVel = myRoot.AssemblyAngularVelocity
+
+                myRoot.CFrame = finalCF
+
+                RunService:BindToRenderStep("__rage_restore", 101, function()
+                    if myRoot and myRoot.Parent then
+                        myRoot.CFrame = oldCF
+                        myRoot.AssemblyLinearVelocity = oldVel
+                        myRoot.AssemblyAngularVelocity = oldRotVel
+                    end
+                    RunService:UnbindFromRenderStep("__rage_restore")
+                end)
+            end
+
+            if not deflecting[target] then
+                pcall(function()
+                    local FighterController = require(LocalPlayer.PlayerScripts.Controllers.FighterController)
+                    local util = require(ReplicatedStorage.Modules.Utility)
+                    local enum = require(ReplicatedStorage.Modules.EnumLibrary)
+
+                    if FighterController and FighterController.LocalFighter then
+                        local item = FighterController.LocalFighter.EquippedItem
+                        if item and tick() - lastRageFire >= RageConfig.FireRate then
+                            lastRageFire = tick()
+                            if math.random(1, 100) <= RageConfig.Hitchance then
+                                local aimCF = CFrame.lookAt(myRoot.Position, optimalHitbox.Position)
+                                local targetCF = optimalHitbox.CFrame
+                                local randomOffset = Vector3.new(
+                                    (math.random() - 0.5) * 0.035,
+                                    (math.random() - 0.5) * 0.035,
+                                    (math.random() - 0.5) * 0.035
+                                )
+                                local aimedPos = optimalHitbox.Position + randomOffset
+                                local objSpaceHeadOffset = optimalHitbox.CFrame:ToObjectSpace(CFrame.new(aimedPos))
+                                local cameradata = {
+                                    [utf8.char(1)] = {
+                                        [utf8.char(0)] = util:EncodeCFrame(aimCF),
+                                        [utf8.char(1)] = util:EncodeCFrame(targetCF),
+                                        [utf8.char(2)] = optimalHitbox,
+                                        [utf8.char(3)] = util:EncodeCFrame(objSpaceHeadOffset)
                                     }
-                                    local remote = ReplicatedStorage.Remotes.Replication.Fighter.UseItem
-                                    remote:FireServer(item:Get("ObjectID"), enum:ToEnum("StartShooting"), cameradata, nil)
-                                    remote:FireServer(item:Get("ObjectID"), enum:ToEnum("StartShooting"), cameradata, nil)
-                                end
+                                }
+                                local remote = ReplicatedStorage.Remotes.Replication.Fighter.UseItem
+                                remote:FireServer(item:Get("ObjectID"), enum:ToEnum("StartShooting"), cameradata, nil)
+                                remote:FireServer(item:Get("ObjectID"), enum:ToEnum("StartShooting"), cameradata, nil)
                             end
                         end
-                    end)
-                end
-            end
-        else
-            if voidActive then
-                StopBaitingVoid()
-            end
-            if myRoot and target and isTargetValid(target) and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
-                local tChar = target.Character
-                local tHrp = tChar.HumanoidRootPart
-                local optimalHitbox = tChar:FindFirstChild("Head") or tHrp
-                local finalCF
-                if RageMode == "GUN" then
-                    finalCF = tHrp.CFrame
-                elseif RageMode == "MELE" then
-                    finalCF = tHrp.CFrame
-                elseif RageMode == "KNIFE" then
-                    local side = math.sin(tick() * 6) * 3
-                    finalCF = tHrp.CFrame * CFrame.new(side, 0, 2.5)
-                end
-                if finalCF then
-                    local oldCF = myRoot.CFrame
-                    local oldVel = myRoot.AssemblyLinearVelocity
-                    local oldRotVel = myRoot.AssemblyAngularVelocity
-                    myRoot.CFrame = finalCF
-                    RunService:BindToRenderStep("__rage_restore", 101, function()
-                        if myRoot and myRoot.Parent then
-                            myRoot.CFrame = oldCF
-                            myRoot.AssemblyLinearVelocity = oldVel
-                            myRoot.AssemblyAngularVelocity = oldRotVel
-                        end
-                        RunService:UnbindFromRenderStep("__rage_restore")
-                    end)
-                end
-                if not deflecting[target] then
-                    pcall(function()
-                        local FighterController = require(LocalPlayer.PlayerScripts.Controllers.FighterController)
-                        local util = require(ReplicatedStorage.Modules.Utility)
-                        local enum = require(ReplicatedStorage.Modules.EnumLibrary)
-                        if FighterController and FighterController.LocalFighter then
-                            local item = FighterController.LocalFighter.EquippedItem
-                            if item and tick() - lastRageFire >= RageConfig.FireRate then
-                                lastRageFire = tick()
-                                if math.random(1, 100) <= RageConfig.Hitchance then
-                                    local aimCF = CFrame.lookAt(myRoot.Position, optimalHitbox.Position)
-                                    local targetCF = optimalHitbox.CFrame
-                                    local randomOffset = Vector3.new(
-                                        (math.random() - 0.5) * 0.035,
-                                        (math.random() - 0.5) * 0.035,
-                                        (math.random() - 0.5) * 0.035
-                                    )
-                                    local aimedPos = optimalHitbox.Position + randomOffset
-                                    local objSpaceHeadOffset = optimalHitbox.CFrame:ToObjectSpace(CFrame.new(aimedPos))
-                                    local cameradata = {
-                                        [utf8.char(1)] = {
-                                            [utf8.char(0)] = util:EncodeCFrame(aimCF),
-                                            [utf8.char(1)] = util:EncodeCFrame(targetCF),
-                                            [utf8.char(2)] = optimalHitbox,
-                                            [utf8.char(3)] = util:EncodeCFrame(objSpaceHeadOffset)
-                                        }
-                                    }
-                                    local remote = ReplicatedStorage.Remotes.Replication.Fighter.UseItem
-                                    remote:FireServer(item:Get("ObjectID"), enum:ToEnum("StartShooting"), cameradata, nil)
-                                    remote:FireServer(item:Get("ObjectID"), enum:ToEnum("StartShooting"), cameradata, nil)
-                                end
-                            end
-                        end
-                    end)
-                end
+                    end
+                end)
             end
         end
     end
@@ -2686,31 +2592,38 @@ RunService.RenderStepped:Connect(function(dt)
     if AntiAimEnabled and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
         local char = LocalPlayer.Character
         local hrp = char.HumanoidRootPart
+
         if AntiAimMode == "Broken (Recomendado)" then
             local speed = AntiAimSpinSpeed * 18
             local t = tick() * speed
+
             local randomOffset = Vector3.new(
                 math.sin(t * 1.7) * 4,
                 math.cos(t * 2.3) * 3.5,
                 math.sin(t * 1.1) * 4
             )
+
             hrp.CFrame = CFrame.new(hrp.Position + randomOffset * 0.015) * CFrame.Angles(
                 math.rad(math.sin(t) * 180),
                 math.rad(t * 3),
                 math.rad(math.cos(t * 1.4) * 180)
             )
+
             local head = char:FindFirstChild("Head")
             local upperTorso = char:FindFirstChild("UpperTorso")
             local lowerTorso = char:FindFirstChild("LowerTorso")
+
             if head and upperTorso and lowerTorso then
                 head.CFrame = lowerTorso.CFrame * CFrame.new(0, -1.8, 0) * CFrame.Angles(math.rad(180), t * 2, 0)
             end
+
             local limbs = {
                 "LeftUpperArm", "LeftLowerArm", "LeftHand",
                 "RightUpperArm", "RightLowerArm", "RightHand",
                 "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
                 "RightUpperLeg", "RightLowerLeg", "RightFoot"
             }
+
             for i, limbName in ipairs(limbs) do
                 local part = char:FindFirstChild(limbName)
                 if part then
@@ -2791,7 +2704,6 @@ MenuGroup:AddLabel("Menu bind"):AddKeyPicker("MenuKeybind", {Default = "RightShi
 MenuGroup:AddButton("Unload", function()
     DisableRageOptimization()
     StopFreecam()
-    StopBaitingVoid()
     if ScreenGui then ScreenGui:Destroy() end
     for _, line in pairs(Crosshair) do pcall(function() line:Remove() end) end
     for _, d in pairs(radarDots) do pcall(function() d:Remove() end) end
@@ -2900,4 +2812,4 @@ task.spawn(function()
     end
 end)
 
-Library:Notify("APOCALYPSE BETA V3 LOADED", 5)
+Library:Notify("GG", 5)
